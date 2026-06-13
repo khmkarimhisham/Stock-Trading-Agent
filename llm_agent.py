@@ -9,28 +9,53 @@ class LLMAgent:
         self.model_name = config.LLM_MODEL_NAME
 
     def analyze(self, symbol, current_price, math_prediction, news_headline=None):
+        # 1. Base mathematical decision
+        up_prob = math_prediction.get('UP', 0)
+        down_prob = math_prediction.get('DOWN', 0)
+        
+        if up_prob > 55.0:
+            base_action = "BUY"
+            base_reasoning = f"Math model strongly predicts an uptrend ({up_prob:.1f}%)."
+            confidence = up_prob
+        elif down_prob > 55.0:
+            base_action = "SELL"
+            base_reasoning = f"Math model strongly predicts a downtrend ({down_prob:.1f}%)."
+            confidence = down_prob
+        else:
+            base_action = "HOLD"
+            base_reasoning = f"Math probabilities are neutral (UP: {up_prob:.1f}%, DOWN: {down_prob:.1f}%)."
+            confidence = max(up_prob, down_prob)
+
+        # 2. Return math decision if no news
+        if not news_headline:
+            return {
+                "action": base_action,
+                "confidence": confidence,
+                "reasoning": base_reasoning
+            }
+
+        # 3. If news exists, ask LLM to evaluate news against math baseline
+        logging.info(f"\nBREAKING NEWS: {news_headline}\n")
+        
         prompt = f"""
 You are an expert quantitative financial analyst AI.
 You are evaluating whether to BUY, SELL, or HOLD the stock: {symbol}.
 Current Price: ${current_price:.2f}
-The mathematical LSTM model predicts the following probabilities for the next hour's price movement:
-- Probability of UPTREND: {math_prediction['UP']:.1f}%
-- Probability of DOWNTREND: {math_prediction['DOWN']:.1f}%
-- Probability of FLAT (No significant movement): {math_prediction['FLAT']:.1f}%
-"""
-        if news_headline:
-            prompt += f"\nBREAKING NEWS: {news_headline}\n"
-            prompt += "Evaluate the mathematical prediction in the context of this breaking news.\n"
-        else:
-            prompt += "\nThere is no recent breaking news. Rely primarily on the mathematical model's trend prediction.\n"
 
-        prompt += """
+The mathematical LSTM model predicts the following probabilities:
+- UPTREND: {up_prob:.1f}%
+- DOWNTREND: {down_prob:.1f}%
+Based on these numbers, the baseline recommendation is {base_action}.
+
+BREAKING NEWS: {news_headline}
+
+Evaluate if this breaking news confirms the baseline recommendation of {base_action}, or if it is significant enough to override it.
 Respond ONLY with a valid JSON object matching this exact structure, with no markdown formatting or extra text:
-{
+{{
     "action": "BUY" | "SELL" | "HOLD",
     "confidence": 0-100,
-    "reasoning": "1 sentence explanation"
-}
+    "reasoning": "1 sentence explanation combining math and news"
+}}
 """
         
         payload = {

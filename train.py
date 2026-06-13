@@ -8,19 +8,7 @@ from math_model import QuantEngine, SimpleLSTM
 import config
 from rich.progress import track
 
-import copy
 
-class DirectionalLoss(nn.Module):
-    """
-    Standard Huber Loss to avoid the mathematical optimization trap
-    where the model outputs exactly 0 to avoid directional penalties.
-    """
-    def __init__(self, penalty=1.0):
-        super().__init__()
-        self.huber = nn.HuberLoss()
-        
-    def forward(self, y_pred, y_true):
-        return self.huber(y_pred, y_true)
 
 def prepare_data(engine, alpaca_client, symbols):
     print("Downloading and preparing historical data from Alpaca...")
@@ -45,11 +33,17 @@ def prepare_data(engine, alpaca_client, symbols):
                             'bb_width', 'atr', 'obv']
             data_values = features_df[feature_cols].values
             
-            # Calculate target: percentage change to next hour's close (multiplied by 100 to represent %)
+            # Calculate target: classify into DOWN (0), FLAT (1), UP (2)
             closes = features_df['close'].values
             targets = np.zeros(len(closes))
             for i in range(len(closes) - 1):
-                targets[i] = ((closes[i+1] - closes[i]) / closes[i]) * 100.0
+                ret = ((closes[i+1] - closes[i]) / closes[i]) * 100.0
+                if ret > 0.05:
+                    targets[i] = 2
+                elif ret < -0.05:
+                    targets[i] = 0
+                else:
+                    targets[i] = 1
                 
             symbol_x, symbol_y = [], []
             # Create sequences
@@ -62,7 +56,7 @@ def prepare_data(engine, alpaca_client, symbols):
                 y_val = targets[i + seq_length - 1] # Target is next day's movement
                 
                 symbol_x.append(x_seq)
-                symbol_y.append([y_val])
+                symbol_y.append(y_val)
                 
             # Chronological split for this symbol: 80% train, 20% validation
             split_idx = int(len(symbol_x) * 0.8)
@@ -79,11 +73,11 @@ def prepare_data(engine, alpaca_client, symbols):
         
     train_dataset = TensorDataset(
         torch.tensor(np.array(train_x), dtype=torch.float32),
-        torch.tensor(np.array(train_y), dtype=torch.float32)
+        torch.tensor(np.array(train_y), dtype=torch.long)
     )
     val_dataset = TensorDataset(
         torch.tensor(np.array(val_x), dtype=torch.float32),
-        torch.tensor(np.array(val_y), dtype=torch.float32)
+        torch.tensor(np.array(val_y), dtype=torch.long)
     )
     
     return train_dataset, val_dataset
@@ -102,8 +96,9 @@ def train_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     
-    # Improved ML Components
-    criterion = DirectionalLoss(penalty=3.0) # Penalize wrong direction by 3x
+    import copy
+    
+    criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
@@ -139,6 +134,8 @@ def train_model():
         # Validation phase
         model.eval()
         val_loss = 0.0
+        correct = 0
+        total = 0
         with torch.no_grad():
             for batch_x, batch_y in val_loader:
                 batch_x, batch_y = batch_x.to(device), batch_y.to(device)
@@ -146,14 +143,19 @@ def train_model():
                 loss = criterion(outputs, batch_y)
                 val_loss += loss.item()
                 
+                _, predicted = torch.max(outputs.data, 1)
+                total += batch_y.size(0)
+                correct += (predicted == batch_y).sum().item()
+                
         avg_val_loss = val_loss / len(val_loader)
+        val_acc = 100 * correct / total
         
         # Step the scheduler with validation loss
         scheduler.step(avg_val_loss)
         
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch [{epoch+1:03d}/{epochs:03d}] | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f} | LR: {current_lr:.6f}")
+        print(f"Epoch [{epoch+1:03d}/{epochs:03d}] | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f} | Val Acc: {val_acc:.2f}% | LR: {current_lr:.6f}")
         
         # Early Stopping and Model Checkpointing
         if avg_val_loss < best_val_loss:

@@ -13,7 +13,10 @@ class LLMAgent:
 You are an expert quantitative financial analyst AI.
 You are evaluating whether to BUY, SELL, or HOLD the stock: {symbol}.
 Current Price: ${current_price:.2f}
-The mathematical LSTM model predicts an expected hourly price change of: {math_prediction:.4f}% (Positive means expected uptrend, negative means downtrend).
+The mathematical LSTM model predicts the following probabilities for the next hour's price movement:
+- Probability of UPTREND: {math_prediction['UP']:.1f}%
+- Probability of DOWNTREND: {math_prediction['DOWN']:.1f}%
+- Probability of FLAT (No significant movement): {math_prediction['FLAT']:.1f}%
 """
         if news_headline:
             prompt += f"\nBREAKING NEWS: {news_headline}\n"

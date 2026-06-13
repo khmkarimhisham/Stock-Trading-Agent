@@ -12,7 +12,7 @@ class SimpleLSTM(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 1) # Predict next percentage change
+        self.fc = nn.Linear(hidden_size, 3) # Predict 3 classes (DOWN, FLAT, UP)
 
     def forward(self, x):
         h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
@@ -101,16 +101,16 @@ class QuantEngine:
 
     def predict(self, df):
         """
-        Returns a numerical prediction (e.g., expected return %)
+        Returns a dictionary of probabilities for DOWN, FLAT, UP
         """
         features_df = self.engineer_features(df)
         if features_df is None or features_df.empty:
-            return 0.0
+            return {"DOWN": 0.0, "FLAT": 100.0, "UP": 0.0}
 
         # Take the last 10 steps as the sequence for prediction
         seq_length = 10
         if len(features_df) < seq_length:
-            return 0.0
+            return {"DOWN": 0.0, "FLAT": 100.0, "UP": 0.0}
 
         recent_data = features_df.iloc[-seq_length:][self.feature_cols].values
         recent_data = self.normalize_sequence(recent_data)
@@ -118,6 +118,11 @@ class QuantEngine:
         x_tensor = torch.tensor(recent_data, dtype=torch.float32).unsqueeze(0) # Batch size 1
         
         with torch.no_grad():
-            prediction = self.model(x_tensor)
+            logits = self.model(x_tensor)
+            probs = torch.nn.functional.softmax(logits, dim=1).squeeze().numpy()
             
-        return prediction.item()
+        return {
+            "DOWN": float(probs[0] * 100),
+            "FLAT": float(probs[1] * 100),
+            "UP": float(probs[2] * 100)
+        }

@@ -40,7 +40,7 @@ def main():
         try:
             historical_data = alpaca.get_historical_bars(symbol)
             math_prediction = quant.predict(historical_data)
-            dash_log(f"[{symbol}] LSTM Prediction: {math_prediction:.4f}%")
+            dash_log(f"[{symbol}] LSTM Prediction: UP: {math_prediction['UP']:.1f}% | DOWN: {math_prediction['DOWN']:.1f}% | FLAT: {math_prediction['FLAT']:.1f}%")
         except Exception as e:
             error_msg = f"[{symbol}] Math model failed: {e}"
             dash_log(error_msg)

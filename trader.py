@@ -126,7 +126,7 @@ def main():
         while True:
             try:
                 if alpaca.is_market_open():
-                    process_queued_orders(alpaca, dash_log)
+                    process_queued_orders(alpaca, dash_log, process_trading_signal)
             except Exception as e:
                 dash_log(f"Error in queue loop: {e}")
             time.sleep(300) # Check every 5 minutes

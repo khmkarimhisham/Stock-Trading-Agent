@@ -13,13 +13,13 @@ class LLMAgent:
         up_prob = math_prediction.get('UP', 0)
         down_prob = math_prediction.get('DOWN', 0)
         
-        if up_prob > 55.0:
+        if up_prob > 50.0:
             base_action = "BUY"
-            base_reasoning = f"Math model strongly predicts an uptrend ({up_prob:.1f}%)."
+            base_reasoning = f"Math model predicts an uptrend ({up_prob:.1f}%)."
             confidence = up_prob
-        elif down_prob > 55.0:
+        elif down_prob > 50.0:
             base_action = "SELL"
-            base_reasoning = f"Math model strongly predicts a downtrend ({down_prob:.1f}%)."
+            base_reasoning = f"Math model predicts a downtrend ({down_prob:.1f}%)."
             confidence = down_prob
         else:
             base_action = "HOLD"

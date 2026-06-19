@@ -12,19 +12,16 @@ APCA_API_BASE_URL = os.getenv("APCA_API_BASE_URL")
 SYMBOLS = ["AAPL","MSFT", "AMZN","TSLA","NVDA","SPY","GOOGL"]
 
 # Risk Management & Budgeting
-# The maximum dollar amount you are willing to allocate PER STOCK.
-# The bot will buy fractional shares to hit exactly this amount.
-MAX_BUDGET_PER_SYMBOL_USD = 10.0
+# The maximum dollar amount you are willing to allocate across ALL active trades combined.
+TOTAL_TRADING_BUDGET_USD = 100.0
+FINANCIAL_LEVERAGE = 10.0
 
 # Stop loss and take profit percentages (e.g., 0.05 = 5%)
-STOP_LOSS_PCT = 0.05
-TAKE_PROFIT_PCT = 0.10
+STOP_LOSS_PCT = 0.10
+TAKE_PROFIT_PCT = 0.05
 
 # AI Models Configuration
-# URL where your local Ollama server is running
-OLLAMA_API_URL = "http://localhost:11434/api/generate"
-LLM_MODEL_NAME = "llama3"
-
+# (LLM Removed for pure LSTM)
 
 
 # Discord Webhook URL (Get this from your Discord Server Settings -> Integrations -> Webhooks)

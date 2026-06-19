@@ -11,49 +11,66 @@ from rich.progress import track
 
 
 def prepare_data(engine, alpaca_client, symbols):
-    print("Downloading and preparing historical data from Alpaca...")
+    import os, pickle
+    
+    cache_file = "raw_data_cache.pkl"
+    raw_data_dict = {}
+    
+    if os.path.exists(cache_file):
+        print(f"Found local cache ({cache_file}). Loading raw data from disk...")
+        with open(cache_file, "rb") as f:
+            raw_data_dict = pickle.load(f)
+    else:
+        print("Downloading historical data from Alpaca...")
+        for symbol in track(symbols, description="Fetching data"):
+            try:
+                # Get last 6 months of data for training
+                df = alpaca_client.get_historical_bars(symbol, days_back=180)
+                raw_data_dict[symbol] = df
+            except Exception as e:
+                print(f"Error fetching data for {symbol}: {e}")
+        
+        print(f"Saving data to cache ({cache_file})...")
+        with open(cache_file, "wb") as f:
+            pickle.dump(raw_data_dict, f)
+
     train_x, train_y = [], []
     val_x, val_y = [], []
+    seq_length = 60
     
-    seq_length = 10
-    
-    for symbol in track(symbols, description="Fetching data"):
+    print("Preparing sequences and engineering features...")
+    for symbol, df in raw_data_dict.items():
         try:
-            # Get last 2 years of data for training
-            df = alpaca_client.get_historical_bars(symbol, days_back=730)
-            
             # Add technical features
             features_df = engine.engineer_features(df)
             if features_df is None or len(features_df) < seq_length + 1:
                 continue
                 
-            # Extract the 12 robust technical features
+            # Extract the 14 robust technical features
             feature_cols = ['close', 'volume', 'rsi', 'macd', 'macd_diff', 
                             'stoch', 'stoch_signal', 'bb_upper', 'bb_lower', 
-                            'bb_width', 'atr', 'obv']
+                            'bb_width', 'atr', 'obv', 'ema_9', 'ema_21']
             data_values = features_df[feature_cols].values
             
-            # Calculate target: classify into DOWN (0), FLAT (1), UP (2)
+            # Calculate target: classify into DOWN (0), UP (1)
             closes = features_df['close'].values
             targets = np.zeros(len(closes))
-            for i in range(len(closes) - 1):
-                ret = ((closes[i+1] - closes[i]) / closes[i]) * 100.0
-                if ret > 0.05:
-                    targets[i] = 2
-                elif ret < -0.05:
-                    targets[i] = 0
-                else:
+            for i in range(len(closes) - 5):
+                ret = ((closes[i+5] - closes[i]) / closes[i]) * 100.0
+                if ret >= 0:
                     targets[i] = 1
+                else:
+                    targets[i] = 0
                 
             symbol_x, symbol_y = [], []
             # Create sequences
-            for i in range(len(data_values) - seq_length):
+            for i in range(len(data_values) - seq_length - 4):
                 x_seq = data_values[i : i + seq_length].copy()
                 
                 # Sequence-level normalization matching the QuantEngine method
                 x_seq = engine.normalize_sequence(x_seq)
                 
-                y_val = targets[i + seq_length - 1] # Target is next day's movement
+                y_val = targets[i + seq_length - 1] # Target is next 5 mins movement
                 
                 symbol_x.append(x_seq)
                 symbol_y.append(y_val)
@@ -90,7 +107,7 @@ def train_model():
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
     
-    model = SimpleLSTM(input_size=12)
+    model = SimpleLSTM(input_size=14)
     
     # Use GPU if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -99,10 +116,11 @@ def train_model():
     import copy
     
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-5)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
-    
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
     epochs = 100
+    steps_per_epoch = len(train_loader)
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.005, steps_per_epoch=steps_per_epoch, epochs=epochs)
+    
     patience = 15
     best_val_loss = float('inf')
     epochs_no_improve = 0
@@ -127,6 +145,7 @@ def train_model():
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             
             optimizer.step()
+            scheduler.step()
             train_loss += loss.item()
             
         avg_train_loss = train_loss / len(train_loader)
@@ -151,7 +170,7 @@ def train_model():
         val_acc = 100 * correct / total
         
         # Step the scheduler with validation loss
-        scheduler.step(avg_val_loss)
+        # (OneCycleLR is stepped per batch instead)
         
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']

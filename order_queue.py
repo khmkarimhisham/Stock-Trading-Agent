@@ -64,7 +64,7 @@ def process_queued_orders(alpaca_client, log_func, process_signal_func):
         # Re-evaluate
         log_func(f"Re-evaluating queued symbol: {symbol}...")
         try:
-            process_signal_func(symbol, news_headline=None)
+            process_signal_func(symbol)
         except Exception as e:
             msg = f"Failed to re-evaluate {symbol}: {e}"
             log_func(f"[bold red]{msg}[/bold red]")

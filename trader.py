@@ -10,12 +10,10 @@ logging.basicConfig(
 )
 import config
 from alpaca_client import AlpacaClient
-from math_model import QuantEngine
+from model import QuantEngine
 from risk_manager import RiskManager
 from dashboard import DashboardApp
 from notifier import send_discord_alert
-from order_queue import add_to_queue, process_queued_orders
-
 
 
 def main():
@@ -32,11 +30,12 @@ def main():
     dash_log("System initialized. Starting Hybrid AI Trading Bot...")
 
     def process_trading_signal(symbol):
+        dash_log("-------------------------------------------------------------------")
         dash_log(f"Analyzing {symbol}...")
         
         # 1. Math Model
         try:
-            historical_data = alpaca.get_historical_bars(symbol)
+            historical_data = alpaca.get_historical_bars(symbol, days_back=30)
             math_prediction = quant.predict(historical_data)
             dash_log(f"[{symbol}] LSTM Prediction: UP: {math_prediction['UP']:.1f}% | DOWN: {math_prediction['DOWN']:.1f}%")
         except Exception as e:
@@ -84,8 +83,7 @@ def main():
 
         is_market_closed = not alpaca.is_market_open()
         if is_market_closed:
-            dash_log(f"Market is closed. Queueing {symbol} for re-evaluation at market open.")
-            add_to_queue(symbol)
+            dash_log(f"Market is closed.")
             return
 
         order = alpaca.submit_order(symbol, qty, side, current_price, market_closed=False)
@@ -96,17 +94,26 @@ def main():
 
     # (News stream removed for pure HFT LSTM approach)
 
-    # High-Frequency Periodic Loop (every 1 minute)
+    # High-Frequency Periodic Loop
     def periodic_loop():
         # wait a few seconds before starting to let UI render
         time.sleep(2)
+        last_analysis_time = 0
         while True:
-            dash_log("Checking for profitable positions to take profit...")
+            # Check positions for TP/SL
             try:
                 positions = alpaca.get_positions()
                 for pos in positions:
-                    if float(pos.unrealized_pl) > 0:
-                        dash_log(f"[{pos.symbol}] Profitable position found. Taking profit!")
+                    pl_pct = float(pos.unrealized_plpc)
+                    
+                    action_msg = None
+                    if pl_pct >= config.TAKE_PROFIT_PCT:
+                        action_msg = f"Take Profit triggered (+{pl_pct*100:.2f}%)"
+                    elif pl_pct <= -config.STOP_LOSS_PCT:
+                        action_msg = f"Stop Loss triggered ({pl_pct*100:.2f}%)"
+                        
+                    if action_msg:
+                        dash_log(f"[{pos.symbol}] {action_msg}. Closing position!")
                         from alpaca.trading.requests import GetOrdersRequest
                         from alpaca.trading.enums import QueryOrderStatus, OrderType, OrderSide
                         req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[pos.symbol])
@@ -125,34 +132,23 @@ def main():
                         for order in open_orders:
                             alpaca.trading_client.cancel_order_by_id(order.id)
                         alpaca.trading_client.close_position(pos.symbol)
-                        msg = f"Automatically sold {pos.symbol} for profit!"
+                        msg = f"Automatically sold {pos.symbol} - {action_msg}!"
                         dash_log(msg)
-                        send_discord_alert(f"✅ **PROFIT TAKEN:** {msg}")
+                        send_discord_alert(f"✅ **POSITION CLOSED:** {msg}")
             except Exception as e:
-                dash_log(f"Error checking positions for profit: {e}")
+                dash_log(f"Error checking positions for TP/SL: {e}")
 
-            dash_log("Running 1-minute high-frequency analysis...")
-            for symbol in config.SYMBOLS:
-                process_trading_signal(symbol)
-                time.sleep(3) # Avoid rate limits
-            time.sleep(60) # Run every 1 minute
+            current_time = time.time()
+            if current_time - last_analysis_time >= 60:
+                for symbol in config.SYMBOLS:
+                    process_trading_signal(symbol)
+                    time.sleep(3) # Avoid rate limits
+                last_analysis_time = time.time()
+
+            time.sleep(5) # Run TP/SL every 5 seconds
 
     periodic_thread = threading.Thread(target=periodic_loop, daemon=True)
     periodic_thread.start()
-
-    # Queue processing loop (runs every 5 minutes)
-    def queue_loop():
-        time.sleep(5) # Let UI initialize
-        while True:
-            try:
-                if alpaca.is_market_open():
-                    process_queued_orders(alpaca, dash_log, process_trading_signal)
-            except Exception as e:
-                dash_log(f"Error in queue loop: {e}")
-            time.sleep(300) # Check every 5 minutes
-
-    queue_thread = threading.Thread(target=queue_loop, daemon=True)
-    queue_thread.start()
 
     # Main thread runs the Textual App UI
     try:

@@ -28,7 +28,7 @@ class DashboardApp(App):
 
     def on_mount(self) -> None:
         self.title = "Ultimate AI Trading Bot"
-        self.table.add_columns("Symbol", "Qty", "Market Value", "Unrealized P/L")
+        self.table.add_columns("Symbol", "Qty", "Market Value", "Unrealized P/L", "Total P/L (%)")
         self.update_table()
         # Update the table automatically every 5 seconds
         self.set_interval(5, self.update_table)
@@ -38,18 +38,20 @@ class DashboardApp(App):
         try:
             positions = self.alpaca.get_positions()
             if not positions:
-                self.table.add_row("No positions", "-", "-", "-")
+                self.table.add_row("No positions", "-", "-", "-", "-")
             else:
                 for pos in positions:
                     pl_color = "green" if float(pos.unrealized_pl) >= 0 else "red"
+                    pl_pct = float(pos.unrealized_plpc) * 100
                     self.table.add_row(
                         pos.symbol,
                         str(pos.qty),
                         f"${float(pos.market_value):.2f}",
-                        f"[{pl_color}]${float(pos.unrealized_pl):.2f}[/{pl_color}]"
+                        f"[{pl_color}]${float(pos.unrealized_pl):.2f}[/{pl_color}]",
+                        f"[{pl_color}]{pl_pct:.2f}%[/{pl_color}]"
                     )
         except Exception:
-            self.table.add_row("Error fetching", "-", "-", "-")
+            self.table.add_row("Error fetching", "-", "-", "-", "-")
 
     def log_message(self, message: str):
         timestamp = time.strftime("%H:%M:%S")

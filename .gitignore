@@ -222,5 +222,5 @@ __marimo__/
 
 
 pending_orders.json
-lstm_model.pth
-raw_data_cache.pkl
+*.pth
+*.pkl

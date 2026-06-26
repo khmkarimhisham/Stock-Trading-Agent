@@ -14,8 +14,3 @@ def send_discord_alert(message: str):
         response.raise_for_status()
     except Exception as e:
         logging.error(f"Failed to send Discord alert: {e}")
-
-
-
-if __name__ == "__main__":
-    send_discord_alert("Test alert")

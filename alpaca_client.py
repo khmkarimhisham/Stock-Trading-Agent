@@ -23,10 +23,10 @@ class AlpacaClient:
         except Exception:
             return []
 
-    def get_historical_bars(self, symbol, days_back=3):
+    def get_historical_bars(self, symbol, days_back=30):
         request_params = StockBarsRequest(
             symbol_or_symbols=[symbol],
-            timeframe=TimeFrame.Minute,
+            timeframe=TimeFrame.Hour,
             start=datetime.now() - timedelta(days=days_back)
         )
         bars = self.data_client.get_stock_bars(request_params)
@@ -46,28 +46,14 @@ class AlpacaClient:
 
     def submit_order(self, symbol, qty, side: OrderSide, current_price: float, market_closed=False):
         """
-        Submit a fractional order (with bracket if BUY).
+        Submit a fractional order. Alpaca fractional orders must be simple orders.
         """
-        if side == OrderSide.BUY:
-            tp_price = round(current_price * (1.0 + config.TAKE_PROFIT_PCT), 2)
-            sl_price = round(current_price * (1.0 - config.STOP_LOSS_PCT), 2)
-            
-            market_order_data = MarketOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=side,
-                time_in_force=TimeInForce.DAY,
-                order_class=OrderClass.BRACKET,
-                take_profit=TakeProfitRequest(limit_price=tp_price),
-                stop_loss=StopLossRequest(stop_price=sl_price)
-            )
-        else:
-            market_order_data = MarketOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=side,
-                time_in_force=TimeInForce.DAY
-            )
+        market_order_data = MarketOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=side,
+            time_in_force=TimeInForce.DAY
+        )
         
         try:
             order = self.trading_client.submit_order(order_data=market_order_data)
@@ -75,9 +61,6 @@ class AlpacaClient:
         except Exception as e:
             logging.error(f"Failed to submit order for {symbol}: {e}")
             return None
-
-    def get_open_orders(self):
-        return self.trading_client.get_orders()
 
     def is_market_open(self):
         clock = self.trading_client.get_clock()

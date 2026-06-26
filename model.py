@@ -6,44 +6,62 @@ import ta
 import os
 import logging
 
-class SimpleLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size=128, num_layers=2, dropout=0.3):
-        super(SimpleLSTM, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
+class CausalConv1d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, dilation):
+        super().__init__()
+        self.padding = (kernel_size - 1) * dilation
+        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, padding=self.padding, dilation=dilation)
         
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, 
-                            batch_first=True, dropout=dropout if num_layers > 1 else 0)
-        self.layer_norm = nn.LayerNorm(hidden_size)
-        self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(hidden_size, 2) # Predict 2 classes (DOWN, UP)
-
     def forward(self, x):
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        out, _ = self.lstm(x, (h0, c0))
-        out = self.layer_norm(out[:, -1, :])
-        out = self.dropout(out)
+        out = self.conv(x)
+        if self.padding > 0:
+            out = out[:, :, :-self.padding]
+        return out
+
+class StableTCNModel(nn.Module):
+    def __init__(self, input_size, num_channels=[64, 128, 256, 512, 512], kernel_size=5, dropout=0.3):
+        super(StableTCNModel, self).__init__()
+        layers = []
+        num_levels = len(num_channels)
+        in_channels = input_size
+        for i in range(num_levels):
+            dilation_size = 2 ** i
+            out_channels = num_channels[i]
+            layers += [
+                CausalConv1d(in_channels, out_channels, kernel_size, dilation=dilation_size),
+                nn.BatchNorm1d(out_channels),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ]
+            in_channels = out_channels
+            
+        self.tcn = nn.Sequential(*layers)
+        self.fc = nn.Linear(num_channels[-1], 2)
+        
+    def forward(self, x):
+        x = x.transpose(1, 2)
+        out = self.tcn(x)
+        out = out[:, :, -1]
         out = self.fc(out)
         return out
 
 class QuantEngine:
     def __init__(self):
-        # We now use 12 advanced features
+        # We now use 20 advanced features
         self.feature_cols = ['close', 'volume', 'rsi', 'macd', 'macd_diff', 
                              'stoch', 'stoch_signal', 'bb_upper', 'bb_lower', 
-                             'bb_width', 'atr', 'obv', 'ema_9', 'ema_21']
-        self.model = SimpleLSTM(input_size=len(self.feature_cols))
+                             'bb_width', 'atr', 'obv', 'ema_9', 'ema_21',
+                             'williams_r', 'cci', 'roc', 'uo', 'ichimoku_a', 'ichimoku_b']
+        self.model = StableTCNModel(input_size=len(self.feature_cols))
 
         # Load pre-trained weights if they exist
-        if os.path.exists("lstm_model.pth"):
+        if os.path.exists("model.pth"):
             try:
-                self.model.load_state_dict(torch.load("lstm_model.pth"))
-                logging.info("QuantEngine: Loaded trained weights from lstm_model.pth")
+                self.model.load_state_dict(torch.load("model.pth"))
             except Exception as e:
                 logging.warning(f"QuantEngine: Could not load old weights (architecture changed). Using random weights.")
         else:
-            logging.warning("QuantEngine: No lstm_model.pth found. Using randomly initialized weights.")
+            logging.warning("QuantEngine: No model.pth found. Using randomly initialized weights.")
         
         self.model.eval()
 
@@ -75,6 +93,17 @@ class QuantEngine:
         # 3. Volume Indicators
         df['obv'] = ta.volume.OnBalanceVolumeIndicator(close=df['close'], volume=df['volume']).on_balance_volume()
         
+        # 4. Additional Indicators
+        df['williams_r'] = ta.momentum.WilliamsRIndicator(high=df['high'], low=df['low'], close=df['close']).williams_r()
+        df['cci'] = ta.trend.CCIIndicator(high=df['high'], low=df['low'], close=df['close']).cci()
+        df['roc'] = ta.momentum.ROCIndicator(close=df['close']).roc()
+        
+        # 5. Advanced Trend & Oscillators
+        df['uo'] = ta.momentum.UltimateOscillator(high=df['high'], low=df['low'], close=df['close']).ultimate_oscillator()
+        ichimoku = ta.trend.IchimokuIndicator(high=df['high'], low=df['low'])
+        df['ichimoku_a'] = ichimoku.ichimoku_a()
+        df['ichimoku_b'] = ichimoku.ichimoku_b()
+        
         # Drop NaNs created by rolling windows
         df.dropna(inplace=True)
         return df
@@ -82,9 +111,9 @@ class QuantEngine:
     def normalize_sequence(self, seq):
         norm_seq = seq.copy()
         
-        # 1. Price-based columns (close, bb_upper, bb_lower, ema_9, ema_21)
+        # 1. Price-based columns (close, bb_upper, bb_lower, ema_9, ema_21, ichimoku_a, ichimoku_b)
         # Normalize using the close price mean/std to preserve relative distances
-        price_cols = [0, 7, 8, 12, 13]
+        price_cols = [0, 7, 8, 12, 13, 18, 19]
         mean_price = np.mean(seq[:, 0])
         std_price = np.std(seq[:, 0])
         if std_price < 1e-8:
@@ -93,8 +122,8 @@ class QuantEngine:
         for col in price_cols:
             norm_seq[:, col] = (seq[:, col] - mean_price) / std_price
             
-        # 2. Independent continuous columns (volume, macd, macd_diff, bb_width, atr, obv)
-        indep_cols = [1, 3, 4, 9, 10, 11]
+        # 2. Independent continuous columns (volume, macd, macd_diff, bb_width, atr, obv, williams_r, cci, roc)
+        indep_cols = [1, 3, 4, 9, 10, 11, 14, 15, 16]
         for col in indep_cols:
             mean_val = np.mean(seq[:, col])
             std_val = np.std(seq[:, col])
@@ -102,8 +131,8 @@ class QuantEngine:
                 std_val = 1e-8
             norm_seq[:, col] = (seq[:, col] - mean_val) / std_val
             
-        # 3. Bounded columns [0, 100] (rsi, stoch, stoch_signal)
-        bounded_cols = [2, 5, 6]
+        # 3. Bounded columns [0, 100] (rsi, stoch, stoch_signal, uo)
+        bounded_cols = [2, 5, 6, 17]
         norm_seq[:, bounded_cols] = (seq[:, bounded_cols] - 50.0) / 50.0
         
         return norm_seq
@@ -116,8 +145,8 @@ class QuantEngine:
         if features_df is None or features_df.empty:
             return {"DOWN": 0.0, "UP": 0.0}
 
-        # Take the last 60 steps as the sequence for prediction
-        seq_length = 60
+        # Take the last 120 steps as the sequence for prediction
+        seq_length = 120
         if len(features_df) < seq_length:
             return {"DOWN": 0.0, "UP": 0.0}
 

@@ -4,39 +4,29 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 from alpaca_client import AlpacaClient
-from math_model import QuantEngine, SimpleLSTM
+from model import QuantEngine, StableTCNModel
 import config
 from rich.progress import track
 
 
 
 def prepare_data(engine, alpaca_client, symbols):
-    import os, pickle
-    
-    cache_file = "raw_data_cache.pkl"
     raw_data_dict = {}
-    
-    if os.path.exists(cache_file):
-        print(f"Found local cache ({cache_file}). Loading raw data from disk...")
-        with open(cache_file, "rb") as f:
-            raw_data_dict = pickle.load(f)
-    else:
-        print("Downloading historical data from Alpaca...")
-        for symbol in track(symbols, description="Fetching data"):
-            try:
-                # Get last 6 months of data for training
-                df = alpaca_client.get_historical_bars(symbol, days_back=180)
-                raw_data_dict[symbol] = df
-            except Exception as e:
-                print(f"Error fetching data for {symbol}: {e}")
-        
-        print(f"Saving data to cache ({cache_file})...")
-        with open(cache_file, "wb") as f:
-            pickle.dump(raw_data_dict, f)
+
+    print("Downloading historical data from Alpaca...")
+    for symbol in track(symbols, description="Fetching data"):
+        try:
+            # Get last 720 days (approx 2 years) of data for training since 1-hour bars are less frequent
+            df = alpaca_client.get_historical_bars(symbol, days_back=720)
+            raw_data_dict[symbol] = df
+        except Exception as e:
+            print(f"Error fetching data for {symbol}: {e}")
+
 
     train_x, train_y = [], []
+    train_x, train_y = [], []
     val_x, val_y = [], []
-    seq_length = 60
+    seq_length = 120
     
     print("Preparing sequences and engineering features...")
     for symbol, df in raw_data_dict.items():
@@ -46,17 +36,19 @@ def prepare_data(engine, alpaca_client, symbols):
             if features_df is None or len(features_df) < seq_length + 1:
                 continue
                 
-            # Extract the 14 robust technical features
+            # Extract the 17 robust technical features
+            # Extract the 20 robust technical features
             feature_cols = ['close', 'volume', 'rsi', 'macd', 'macd_diff', 
                             'stoch', 'stoch_signal', 'bb_upper', 'bb_lower', 
-                            'bb_width', 'atr', 'obv', 'ema_9', 'ema_21']
+                            'bb_width', 'atr', 'obv', 'ema_9', 'ema_21',
+                            'williams_r', 'cci', 'roc', 'uo', 'ichimoku_a', 'ichimoku_b']
             data_values = features_df[feature_cols].values
             
-            # Calculate target: classify into DOWN (0), UP (1)
-            closes = features_df['close'].values
-            targets = np.zeros(len(closes))
-            for i in range(len(closes) - 5):
-                ret = ((closes[i+5] - closes[i]) / closes[i]) * 100.0
+            # Calculate target: classify into DOWN (0), UP (1) based on smoothed EMA 9
+            smoothed_target = features_df['ema_9'].values
+            targets = np.zeros(len(smoothed_target))
+            for i in range(len(smoothed_target) - 1):
+                ret = ((smoothed_target[i+1] - smoothed_target[i]) / smoothed_target[i]) * 100.0
                 if ret >= 0:
                     targets[i] = 1
                 else:
@@ -64,13 +56,13 @@ def prepare_data(engine, alpaca_client, symbols):
                 
             symbol_x, symbol_y = [], []
             # Create sequences
-            for i in range(len(data_values) - seq_length - 4):
+            for i in range(len(data_values) - seq_length):
                 x_seq = data_values[i : i + seq_length].copy()
                 
                 # Sequence-level normalization matching the QuantEngine method
                 x_seq = engine.normalize_sequence(x_seq)
                 
-                y_val = targets[i + seq_length - 1] # Target is next 5 mins movement
+                y_val = targets[i + seq_length - 1] # Target is next 1 hour movement
                 
                 symbol_x.append(x_seq)
                 symbol_y.append(y_val)
@@ -97,29 +89,40 @@ def prepare_data(engine, alpaca_client, symbols):
         torch.tensor(np.array(val_y), dtype=torch.long)
     )
     
-    return train_dataset, val_dataset
+    # Calculate class weights
+    train_y_np = np.array(train_y)
+    class_0_count = np.sum(train_y_np == 0)
+    class_1_count = np.sum(train_y_np == 1)
+    total_count = len(train_y_np)
+    
+    weight_0 = total_count / (2.0 * max(1, class_0_count))
+    weight_1 = total_count / (2.0 * max(1, class_1_count))
+    class_weights = torch.tensor([weight_0, weight_1], dtype=torch.float32)
+    
+    return train_dataset, val_dataset, class_weights
 
 def train_model():
     engine = QuantEngine()
     alpaca = AlpacaClient()
     
-    train_dataset, val_dataset = prepare_data(engine, alpaca, config.SYMBOLS)
+    train_dataset, val_dataset, class_weights = prepare_data(engine, alpaca, config.SYMBOLS)
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
     
-    model = SimpleLSTM(input_size=14)
+    model = StableTCNModel(input_size=20)
     
     # Use GPU if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
+    class_weights = class_weights.to(device)
     
     import copy
     
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
+    optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-4)
     epochs = 100
     steps_per_epoch = len(train_loader)
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.005, steps_per_epoch=steps_per_epoch, epochs=epochs)
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.0005, steps_per_epoch=steps_per_epoch, epochs=epochs)
     
     patience = 15
     best_val_loss = float('inf')
@@ -191,8 +194,8 @@ def train_model():
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
         
-    torch.save(model.state_dict(), "lstm_model.pth")
-    print(f"Best model weights saved to 'lstm_model.pth' (Val Loss: {best_val_loss:.6f}). The main bot will now use these trained weights.")
+    torch.save(model.state_dict(), "model.pth")
+    print(f"Best model weights saved to 'model.pth' (Val Loss: {best_val_loss:.6f}). The main bot will now use these trained weights.")
 
 if __name__ == "__main__":
     train_model()

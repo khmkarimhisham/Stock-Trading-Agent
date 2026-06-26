@@ -7,7 +7,7 @@ from alpaca_client import AlpacaClient
 from model import QuantEngine, StableTCNModel
 import config
 from rich.progress import track
-import json
+import copy
 
 
 def prepare_data(engine, alpaca_client, symbols):
@@ -24,8 +24,6 @@ def prepare_data(engine, alpaca_client, symbols):
 
 
     ticker_dict = {sym: idx for idx, sym in enumerate(symbols)}
-    with open("ticker_dict.json", "w") as f:
-        json.dump(ticker_dict, f)
 
     train_x, train_t, train_y = [], [], []
     val_x, val_t, val_y = [], [], []
@@ -124,9 +122,7 @@ def train_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     class_weights = class_weights.to(device)
-    
-    import copy
-    
+        
     criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
     optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-2)
     epochs = 100

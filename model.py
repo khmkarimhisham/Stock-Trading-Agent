@@ -6,6 +6,7 @@ import ta
 import os
 import json
 import logging
+import config
 
 class CausalConv1d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, dilation):
@@ -61,13 +62,7 @@ class QuantEngine:
         
         self.device = torch.device('cpu') # Enforce CPU for inference
 
-        self.ticker_dict = {}
-        if os.path.exists("ticker_dict.json"):
-            try:
-                with open("ticker_dict.json", "r") as f:
-                    self.ticker_dict = json.load(f)
-            except Exception as e:
-                logging.warning(f"QuantEngine: Could not load ticker_dict.json. {e}")
+        self.ticker_dict = {sym: idx for idx, sym in enumerate(config.SYMBOLS)}
 
         num_tickers = max(1, len(self.ticker_dict))
         self.model = StableTCNModel(input_size=len(self.feature_cols), num_tickers=num_tickers)

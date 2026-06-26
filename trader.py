@@ -2,18 +2,22 @@ import threading
 import time
 import logging
 from alpaca.trading.enums import OrderSide
-
-logging.basicConfig(
-    filename='bot.log',
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 import config
 from alpaca_client import AlpacaClient
 from model import QuantEngine
 from risk_manager import RiskManager
 from dashboard import DashboardApp
 from notifier import send_discord_alert
+from alpaca.trading.requests import GetOrdersRequest
+from alpaca.trading.enums import QueryOrderStatus, OrderType, OrderSide
+
+
+
+logging.basicConfig(
+    filename='bot.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 
 def main():
@@ -115,8 +119,6 @@ def main():
 
                     if action_msg:
                         dash_log(f"[{pos.symbol}] {action_msg}. Closing position!")
-                        from alpaca.trading.requests import GetOrdersRequest
-                        from alpaca.trading.enums import QueryOrderStatus, OrderType, OrderSide
                         req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[pos.symbol])
                         open_orders = alpaca.trading_client.get_orders(req)
                         

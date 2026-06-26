@@ -95,10 +95,9 @@ def main():
     # (News stream removed for pure HFT LSTM approach)
 
     # High-Frequency Periodic Loop
-    def periodic_loop():
+    def tp_sl_loop():
         # wait a few seconds before starting to let UI render
         time.sleep(2)
-        last_analysis_time = 0
         while True:
             # Check positions for TP/SL
             try:
@@ -138,17 +137,21 @@ def main():
             except Exception as e:
                 dash_log(f"Error checking positions for TP/SL: {e}")
 
-            current_time = time.time()
-            if current_time - last_analysis_time >= 60:
-                for symbol in config.SYMBOLS:
-                    process_trading_signal(symbol)
-                    time.sleep(3) # Avoid rate limits
-                last_analysis_time = time.time()
-
             time.sleep(5) # Run TP/SL every 5 seconds
 
-    periodic_thread = threading.Thread(target=periodic_loop, daemon=True)
-    periodic_thread.start()
+    def analysis_loop():
+        time.sleep(2)
+        while True:
+            for symbol in config.SYMBOLS:
+                process_trading_signal(symbol)
+                time.sleep(3) # Avoid rate limits
+            time.sleep(60) # Run every 1 minute
+
+    tp_sl_thread = threading.Thread(target=tp_sl_loop, daemon=True)
+    tp_sl_thread.start()
+
+    analysis_thread = threading.Thread(target=analysis_loop, daemon=True)
+    analysis_thread.start()
 
     # Main thread runs the Textual App UI
     try:

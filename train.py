@@ -7,7 +7,7 @@ from alpaca_client import AlpacaClient
 from model import QuantEngine, StableTCNModel
 import config
 from rich.progress import track
-
+import json
 
 
 def prepare_data(engine, alpaca_client, symbols):
@@ -23,9 +23,12 @@ def prepare_data(engine, alpaca_client, symbols):
             print(f"Error fetching data for {symbol}: {e}")
 
 
-    train_x, train_y = [], []
-    train_x, train_y = [], []
-    val_x, val_y = [], []
+    ticker_dict = {sym: idx for idx, sym in enumerate(symbols)}
+    with open("ticker_dict.json", "w") as f:
+        json.dump(ticker_dict, f)
+
+    train_x, train_t, train_y = [], [], []
+    val_x, val_t, val_y = [], [], []
     seq_length = 120
     
     print("Preparing sequences and engineering features...")
@@ -54,7 +57,8 @@ def prepare_data(engine, alpaca_client, symbols):
                 else:
                     targets[i] = 0
                 
-            symbol_x, symbol_y = [], []
+            symbol_x, symbol_t, symbol_y = [], [], []
+            ticker_id = ticker_dict[symbol]
             # Create sequences
             for i in range(len(data_values) - seq_length):
                 x_seq = data_values[i : i + seq_length].copy()
@@ -65,13 +69,16 @@ def prepare_data(engine, alpaca_client, symbols):
                 y_val = targets[i + seq_length - 1] # Target is next 1 hour movement
                 
                 symbol_x.append(x_seq)
+                symbol_t.append(ticker_id)
                 symbol_y.append(y_val)
                 
             # Chronological split for this symbol: 80% train, 20% validation
             split_idx = int(len(symbol_x) * 0.8)
             train_x.extend(symbol_x[:split_idx])
+            train_t.extend(symbol_t[:split_idx])
             train_y.extend(symbol_y[:split_idx])
             val_x.extend(symbol_x[split_idx:])
+            val_t.extend(symbol_t[split_idx:])
             val_y.extend(symbol_y[split_idx:])
             
         except Exception as e:
@@ -82,10 +89,12 @@ def prepare_data(engine, alpaca_client, symbols):
         
     train_dataset = TensorDataset(
         torch.tensor(np.array(train_x), dtype=torch.float32),
+        torch.tensor(np.array(train_t), dtype=torch.long),
         torch.tensor(np.array(train_y), dtype=torch.long)
     )
     val_dataset = TensorDataset(
         torch.tensor(np.array(val_x), dtype=torch.float32),
+        torch.tensor(np.array(val_t), dtype=torch.long),
         torch.tensor(np.array(val_y), dtype=torch.long)
     )
     
@@ -109,7 +118,7 @@ def train_model():
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
     
-    model = StableTCNModel(input_size=20)
+    model = StableTCNModel(input_size=20, num_tickers=len(config.SYMBOLS))
     
     # Use GPU if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -119,7 +128,7 @@ def train_model():
     import copy
     
     criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
-    optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-2)
     epochs = 100
     steps_per_epoch = len(train_loader)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.0005, steps_per_epoch=steps_per_epoch, epochs=epochs)
@@ -136,11 +145,15 @@ def train_model():
         model.train()
         train_loss = 0.0
         
-        for batch_x, batch_y in train_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+        for batch_x, batch_t, batch_y in train_loader:
+            batch_x, batch_t, batch_y = batch_x.to(device), batch_t.to(device), batch_y.to(device)
+            
+            # Inject Gaussian Noise for Data Augmentation (Regularization)
+            noise = torch.randn_like(batch_x) * 0.05
+            batch_x_noisy = batch_x + noise
             
             optimizer.zero_grad()
-            outputs = model(batch_x)
+            outputs = model(batch_x_noisy, batch_t)
             loss = criterion(outputs, batch_y)
             loss.backward()
             
@@ -159,9 +172,9 @@ def train_model():
         correct = 0
         total = 0
         with torch.no_grad():
-            for batch_x, batch_y in val_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                outputs = model(batch_x)
+            for batch_x, batch_t, batch_y in val_loader:
+                batch_x, batch_t, batch_y = batch_x.to(device), batch_t.to(device), batch_y.to(device)
+                outputs = model(batch_x, batch_t)
                 loss = criterion(outputs, batch_y)
                 val_loss += loss.item()
                 

@@ -48,7 +48,6 @@ class RiskManager:
             
             if remaining_symbol_budget <= 1.0: # Prevent tiny <$1 buys
                 msg = f"Symbol budget reached (${budget_per_symbol:.2f})"
-                logging.warning(f"RiskManager: Rejecting BUY for {symbol}. {msg}")
                 return "HOLD", 0.0, msg
             
             if current_price <= 0:

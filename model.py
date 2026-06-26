@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import ta
 import os
+import json
 import logging
 
 class CausalConv1d(nn.Module):
@@ -19,11 +20,12 @@ class CausalConv1d(nn.Module):
         return out
 
 class StableTCNModel(nn.Module):
-    def __init__(self, input_size, num_channels=[64, 128, 256, 512, 512], kernel_size=5, dropout=0.3):
+    def __init__(self, input_size, num_tickers=1, embedding_dim=8, num_channels=[32, 64, 128, 256], kernel_size=5, dropout=0.5):
         super(StableTCNModel, self).__init__()
+        self.ticker_embedding = nn.Embedding(num_tickers, embedding_dim)
         layers = []
         num_levels = len(num_channels)
-        in_channels = input_size
+        in_channels = input_size + embedding_dim
         for i in range(num_levels):
             dilation_size = 2 ** i
             out_channels = num_channels[i]
@@ -38,7 +40,11 @@ class StableTCNModel(nn.Module):
         self.tcn = nn.Sequential(*layers)
         self.fc = nn.Linear(num_channels[-1], 2)
         
-    def forward(self, x):
+    def forward(self, x, ticker_idx):
+        emb = self.ticker_embedding(ticker_idx)
+        emb = emb.unsqueeze(1).expand(-1, x.shape[1], -1)
+        x = torch.cat([x, emb], dim=-1)
+        
         x = x.transpose(1, 2)
         out = self.tcn(x)
         out = out[:, :, -1]
@@ -52,17 +58,30 @@ class QuantEngine:
                              'stoch', 'stoch_signal', 'bb_upper', 'bb_lower', 
                              'bb_width', 'atr', 'obv', 'ema_9', 'ema_21',
                              'williams_r', 'cci', 'roc', 'uo', 'ichimoku_a', 'ichimoku_b']
-        self.model = StableTCNModel(input_size=len(self.feature_cols))
+        
+        self.device = torch.device('cpu') # Enforce CPU for inference
+
+        self.ticker_dict = {}
+        if os.path.exists("ticker_dict.json"):
+            try:
+                with open("ticker_dict.json", "r") as f:
+                    self.ticker_dict = json.load(f)
+            except Exception as e:
+                logging.warning(f"QuantEngine: Could not load ticker_dict.json. {e}")
+
+        num_tickers = max(1, len(self.ticker_dict))
+        self.model = StableTCNModel(input_size=len(self.feature_cols), num_tickers=num_tickers)
 
         # Load pre-trained weights if they exist
         if os.path.exists("model.pth"):
             try:
-                self.model.load_state_dict(torch.load("model.pth"))
+                self.model.load_state_dict(torch.load("model.pth", map_location=self.device))
             except Exception as e:
                 logging.warning(f"QuantEngine: Could not load old weights (architecture changed). Using random weights.")
         else:
             logging.warning("QuantEngine: No model.pth found. Using randomly initialized weights.")
         
+        self.model.to(self.device)
         self.model.eval()
 
     def engineer_features(self, df):
@@ -137,9 +156,9 @@ class QuantEngine:
         
         return norm_seq
 
-    def predict(self, df):
+    def predict(self, df, symbol):
         """
-        Returns a dictionary of probabilities for DOWN, FLAT, UP
+        Returns a dictionary of probabilities for DOWN, UP
         """
         features_df = self.engineer_features(df)
         if features_df is None or features_df.empty:
@@ -153,11 +172,14 @@ class QuantEngine:
         recent_data = features_df.iloc[-seq_length:][self.feature_cols].values
         recent_data = self.normalize_sequence(recent_data)
         
-        x_tensor = torch.tensor(recent_data, dtype=torch.float32).unsqueeze(0) # Batch size 1
+        x_tensor = torch.tensor(recent_data, dtype=torch.float32).unsqueeze(0).to(self.device) # Batch size 1
+        
+        ticker_id = self.ticker_dict.get(symbol, 0)
+        ticker_tensor = torch.tensor([ticker_id], dtype=torch.long).to(self.device)
         
         with torch.no_grad():
-            logits = self.model(x_tensor)
-            probs = torch.nn.functional.softmax(logits, dim=1).squeeze().numpy()
+            logits = self.model(x_tensor, ticker_tensor)
+            probs = torch.nn.functional.softmax(logits, dim=1).squeeze().cpu().numpy()
             
         return {
             "DOWN": float(probs[0] * 100),

@@ -36,12 +36,12 @@ def main():
         # 1. Math Model
         try:
             historical_data = alpaca.get_historical_bars(symbol, days_back=30)
-            math_prediction = quant.predict(historical_data)
+            math_prediction = quant.predict(historical_data, symbol)
             dash_log(f"[{symbol}] LSTM Prediction: UP: {math_prediction['UP']:.1f}% | DOWN: {math_prediction['DOWN']:.1f}%")
         except Exception as e:
             error_msg = f"[{symbol}] Math model failed: {e}"
             dash_log(error_msg)
-            send_discord_alert(f"⚠️ **CRITICAL ERROR:** {error_msg}")
+            send_discord_alert(f"⚠️⚠️⚠️ **CRITICAL ERROR:** {error_msg}")
             return
 
         # 2. LSTM Decision Logic
@@ -53,15 +53,15 @@ def main():
         up_prob = math_prediction['UP']
         down_prob = math_prediction['DOWN']
         
-        if up_prob > 60.0:
+        if up_prob > config.PROBABILITY_THRESHOLD:
             action = "BUY"
-            reasoning = f"UP probability ({up_prob:.1f}%) > 60%"
-        elif down_prob > 60.0:
+            reasoning = f"UP probability ({up_prob:.1f}%) > {config.PROBABILITY_THRESHOLD}%"
+        elif down_prob > config.PROBABILITY_THRESHOLD:
             action = "SELL"
-            reasoning = f"DOWN probability ({down_prob:.1f}%) > 60%"
+            reasoning = f"DOWN probability ({down_prob:.1f}%) > {config.PROBABILITY_THRESHOLD}%"
         else:
             action = "HOLD"
-            reasoning = "Probabilities below 60% threshold"
+            reasoning = f"Probabilities below {config.PROBABILITY_THRESHOLD}% threshold"
             
         dash_log(f"[{symbol}] LSTM Action: {action} ({reasoning})")
 
@@ -76,7 +76,7 @@ def main():
             side = OrderSide.SELL
         else:
             if action != approved_action:
-                dash_log(f"[bold red][{symbol}] Risk Manager OVERRIDE -> HOLD: {reason}[/bold red]")
+                dash_log(f"[{symbol}] Risk Manager OVERRIDE -> HOLD: {reason}")
             else:
                 dash_log(f"[{symbol}] Holding position.")
             return
@@ -90,7 +90,7 @@ def main():
         if order:
             msg = f"Order submitted successfully: {order.id} | {approved_action} {qty} {symbol}"
             dash_log(msg)
-            send_discord_alert(f"✅ **TRADE EXECUTED:** {msg}")
+            send_discord_alert(f"⚫️ **TRADE EXECUTED:** {msg}")
 
     # (News stream removed for pure HFT LSTM approach)
 
@@ -108,9 +108,11 @@ def main():
                     action_msg = None
                     if pl_pct >= config.TAKE_PROFIT_PCT:
                         action_msg = f"Take Profit triggered (+{pl_pct*100:.2f}%)"
+                        discord_message = f"🟢 **POSITION CLOSED:** Automatically sold {pos.symbol} - {action_msg}!"
                     elif pl_pct <= -config.STOP_LOSS_PCT:
                         action_msg = f"Stop Loss triggered ({pl_pct*100:.2f}%)"
-                        
+                        discord_message = f"🔴 **POSITION CLOSED:** Automatically sold {pos.symbol} - {action_msg}!"
+
                     if action_msg:
                         dash_log(f"[{pos.symbol}] {action_msg}. Closing position!")
                         from alpaca.trading.requests import GetOrdersRequest
@@ -131,11 +133,11 @@ def main():
                         for order in open_orders:
                             alpaca.trading_client.cancel_order_by_id(order.id)
                         alpaca.trading_client.close_position(pos.symbol)
-                        msg = f"Automatically sold {pos.symbol} - {action_msg}!"
+                        msg = f"[bold red]Automatically sold {pos.symbol} - {action_msg}![/bold red]"
                         dash_log(msg)
-                        send_discord_alert(f"✅ **POSITION CLOSED:** {msg}")
+                        send_discord_alert(discord_message)
             except Exception as e:
-                dash_log(f"Error checking positions for TP/SL: {e}")
+                dash_log(f"[bold red]Error checking positions for TP/SL: {e}[/bold red]")
 
             time.sleep(5) # Run TP/SL every 5 seconds
 

@@ -18,7 +18,7 @@ FINANCIAL_LEVERAGE = 10.0
 STOP_LOSS_PCT = 0.02
 TAKE_PROFIT_PCT = 0.001
 
-PROBABILITY_THRESHOLD = 80.0
+PROBABILITY_THRESHOLD = 90.0
 
 # Discord Webhook URL (Get this from your Discord Server Settings -> Integrations -> Webhooks)
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")

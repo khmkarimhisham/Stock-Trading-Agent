@@ -1,6 +1,7 @@
 import threading
 import time
 import logging
+import datetime
 from alpaca.trading.enums import OrderSide
 import config
 from alpaca_client import AlpacaClient
@@ -96,59 +97,72 @@ def main():
             dash_log(msg)
             send_discord_alert(f"⚫️ **TRADE EXECUTED:** {msg}")
 
-    # (News stream removed for pure HFT LSTM approach)
 
     # High-Frequency Periodic Loop
     def tp_sl_loop():
         # wait a few seconds before starting to let UI render
         time.sleep(2)
         while True:
-            # Check positions for TP/SL
-            try:
-                positions = alpaca.get_positions()
-                for pos in positions:
-                    pl_pct = float(pos.unrealized_plpc)
-                    
-                    action_msg = None
-                    if pl_pct >= config.TAKE_PROFIT_PCT:
-                        action_msg = f"Take Profit triggered (+{pl_pct*100:.2f}%)"
-                        discord_message = f"🟢 **POSITION CLOSED:** Automatically sold {pos.symbol} - {action_msg}!"
-                    elif pl_pct <= -config.STOP_LOSS_PCT:
-                        action_msg = f"Stop Loss triggered ({pl_pct*100:.2f}%)"
-                        discord_message = f"🔴 **POSITION CLOSED:** Automatically sold {pos.symbol} - {action_msg}!"
-
-                    if action_msg:
-                        dash_log(f"[{pos.symbol}] {action_msg}. Closing position!")
-                        req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[pos.symbol])
-                        open_orders = alpaca.trading_client.get_orders(req)
-                        
-                        is_closing = False
-                        for order in open_orders:
-                            if order.side == OrderSide.SELL and order.type == OrderType.MARKET:
-                                is_closing = True
-                                break
-                                
-                        if is_closing:
-                            dash_log(f"[{pos.symbol}] Close order already pending. Waiting for fill...")
-                            continue
+            now = datetime.datetime.now()
+            if now.weekday() < 5:
+                current_time = now.time()
+                start_time = datetime.time(16, 30)
+                end_time = datetime.time(23, 0)
+                
+                if start_time <= current_time <= end_time:
+                    # Check positions for TP/SL
+                    try:
+                        positions = alpaca.get_positions()
+                        for pos in positions:
+                            pl_pct = float(pos.unrealized_plpc)
                             
-                        for order in open_orders:
-                            alpaca.trading_client.cancel_order_by_id(order.id)
-                        alpaca.trading_client.close_position(pos.symbol)
-                        msg = f"[bold red]Automatically sold {pos.symbol} - {action_msg}![/bold red]"
-                        dash_log(msg)
-                        send_discord_alert(discord_message)
-            except Exception as e:
-                dash_log(f"[bold red]Error checking positions for TP/SL: {e}[/bold red]")
+                            action_msg = None
+                            if pl_pct >= config.TAKE_PROFIT_PCT:
+                                action_msg = f"Take Profit triggered (+{pl_pct*100:.2f}%)"
+                                discord_message = f"🟢 **POSITION CLOSED:** Automatically sold {pos.symbol} - {action_msg}!"
+                            elif pl_pct <= -config.STOP_LOSS_PCT:
+                                action_msg = f"Stop Loss triggered ({pl_pct*100:.2f}%)"
+                                discord_message = f"🔴 **POSITION CLOSED:** Automatically sold {pos.symbol} - {action_msg}!"
+        
+                            if action_msg:
+                                dash_log(f"[{pos.symbol}] {action_msg}. Closing position!")
+                                req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[pos.symbol])
+                                open_orders = alpaca.trading_client.get_orders(req)
+                                
+                                is_closing = False
+                                for order in open_orders:
+                                    if order.side == OrderSide.SELL and order.type == OrderType.MARKET:
+                                        is_closing = True
+                                        break
+                                        
+                                if is_closing:
+                                    dash_log(f"[{pos.symbol}] Close order already pending. Waiting for fill...")
+                                    continue
+                                    
+                                for order in open_orders:
+                                    alpaca.trading_client.cancel_order_by_id(order.id)
+                                alpaca.trading_client.close_position(pos.symbol)
+                                msg = f"[bold red]Automatically sold {pos.symbol} - {action_msg}![/bold red]"
+                                dash_log(msg)
+                                send_discord_alert(discord_message)
+                    except Exception as e:
+                        dash_log(f"[bold red]Error checking positions for TP/SL: {e}[/bold red]")
 
             time.sleep(5) # Run TP/SL every 5 seconds
 
     def analysis_loop():
         time.sleep(2)
         while True:
-            for symbol in config.SYMBOLS:
-                process_trading_signal(symbol)
-                time.sleep(3) # Avoid rate limits
+            now = datetime.datetime.now()
+            if now.weekday() < 5:
+                current_time = now.time()
+                start_time = datetime.time(16, 30)
+                end_time = datetime.time(22, 0)
+                
+                if start_time <= current_time <= end_time:
+                    for symbol in config.SYMBOLS:
+                        process_trading_signal(symbol)
+                        time.sleep(3) # Avoid rate limits
             time.sleep(60) # Run every 1 minute
 
     tp_sl_thread = threading.Thread(target=tp_sl_loop, daemon=True)
